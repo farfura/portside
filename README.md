@@ -17,6 +17,14 @@ A native macOS menu bar app that keeps an eye on your local dev world.
 
 **Repo Radar.** Scans your code folders and shows which repos need you: uncommitted changes, commits not pushed, branches never published, branches behind their remote, stashes and conflicts. A project made of several repos (a folder with `frontend` and `backend` repos side by side, or repos nested inside another repo) is shown as one project with its repos underneath. Fetch all remotes in one click, and open any repo in your editor, terminal, Finder or on GitHub.
 
+## Download
+
+The current public build is [Portside 1.1.0](https://github.com/farfura/portside/releases/latest). Open the `.dmg` and drag Portside into Applications.
+
+If a copy is already running, quit it from the panel before you open the new one. macOS keeps the old menu bar app in memory when you replace the file, so the sailboat keeps showing the previous version until you quit it.
+
+This build is for Apple Silicon (M-series Macs) on macOS 14 or newer. It is not notarized. The first time you open it, right-click Portside and choose Open. If macOS still blocks it, allow it in System Settings → Privacy & Security.
+
 ## Requirements
 
 * macOS 14 Sonoma or newer
