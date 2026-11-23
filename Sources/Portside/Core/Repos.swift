@@ -39,8 +39,19 @@ struct RepoStatus: Identifiable, Hashable {
     var remoteURL: String?
     var webURL: URL?
     var error: String?
+    /// The project this repo belongs to. A project is either the repo itself, an outer repo
+    /// that contains it, or a plain folder holding several repos side by side.
+    var projectPath: String = ""
 
     var id: String { path }
+    var projectName: String { (projectPath as NSString).lastPathComponent }
+    var isGrouped: Bool { !projectPath.isEmpty && projectPath != path }
+
+    /// The repo's path relative to its project, used as its label inside a project group.
+    var relativeName: String {
+        guard isGrouped, path.hasPrefix(projectPath + "/") else { return name }
+        return String(path.dropFirst(projectPath.count + 1))
+    }
     var changeCount: Int { staged + modified + untracked }
     var hasRemote: Bool { remoteURL != nil }
     var isUnpublished: Bool { hasRemote && upstream == nil && hasCommits && !isDetached }
@@ -93,34 +104,115 @@ enum RepoScanner {
 
     static func expand(_ path: String) -> String { (path as NSString).expandingTildeInPath }
 
+    /// Folders directly inside home that are never walked when home itself is a root:
+    /// they are huge, or macOS shows a privacy prompt the moment we touch them.
+    /// Add one explicitly in Settings to scan it.
+    private static let homeSkipNames: Set<String> = [
+        "Desktop", "Documents", "Downloads", "Library", "Applications", "Movies", "Music",
+        "Pictures", "Public", "Creative Cloud Files", "Dropbox", "Google Drive", "OneDrive",
+    ]
+
+    /// Extra levels we look inside a repo for nested, independent repos.
+    private static let nestedDepth = 2
+
+    enum GitMarker { case none, repo, submodule }
+
+    /// A real repo has a `.git` folder or a `.git` file pointing at a worktree.
+    /// Submodules also use a `.git` file, but they belong to their parent repo.
+    static func gitMarker(at url: URL) -> GitMarker {
+        let git = url.appendingPathComponent(".git")
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: git.path, isDirectory: &isDir) else { return .none }
+        if isDir.boolValue {
+            return FileManager.default.fileExists(atPath: git.appendingPathComponent("HEAD").path) ? .repo : .none
+        }
+        guard let text = try? String(contentsOf: git, encoding: .utf8), text.hasPrefix("gitdir:") else { return .none }
+        return text.contains("/modules/") ? .submodule : .repo
+    }
+
     static func discover(roots: [String], maxDepth: Int) -> [String] {
         var found = Set<String>()
         let fm = FileManager.default
         let keys: [URLResourceKey] = [.isDirectoryKey, .isSymbolicLinkKey, .isPackageKey]
+        let home = URL(fileURLWithPath: NSHomeDirectory()).standardizedFileURL.path
 
-        func walk(_ url: URL, depth: Int) {
-            if found.count >= 400 { return }
-            if fm.fileExists(atPath: url.appendingPathComponent(".git").path) {
+        func walk(_ url: URL, depth: Int, limit: Int) {
+            if found.count >= 600 { return }
+            var limit = limit
+            switch gitMarker(at: url) {
+            case .repo:
                 found.insert(url.standardizedFileURL.path)
+                // Keep looking inside: a project repo can hold other independent repos.
+                limit = max(limit, depth + nestedDepth)
+            case .submodule:
                 return
+            case .none:
+                break
             }
-            guard depth < maxDepth,
+            guard depth < limit,
                   let children = try? fm.contentsOfDirectory(at: url, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles]) else { return }
+            let isHome = url.standardizedFileURL.path == home
             for child in children {
+                let name = child.lastPathComponent
                 guard let values = try? child.resourceValues(forKeys: Set(keys)),
                       values.isDirectory == true,
                       values.isSymbolicLink != true,
                       values.isPackage != true,
-                      !skipNames.contains(child.lastPathComponent) else { continue }
-                walk(child, depth: depth + 1)
+                      !skipNames.contains(name),
+                      !(isHome && homeSkipNames.contains(name)) else { continue }
+                walk(child, depth: depth + 1, limit: limit)
             }
         }
 
         for root in roots {
             let url = URL(fileURLWithPath: expand(root))
-            walk(url, depth: 0)
+            walk(url, depth: 0, limit: maxDepth)
         }
         return found.sorted()
+    }
+
+    /// Maps each repo to its project:
+    /// * a repo inside another repo belongs to the outermost one,
+    /// * sibling repos in the same plain folder (not a scan root, not home) share that folder,
+    /// * anything else is its own project.
+    /// Folder names people use to hold many unrelated projects, never a project themselves.
+    private static let containerNames: Set<String> = [
+        "projects", "project", "code", "dev", "developer", "repos", "repositories", "src", "sites",
+        "github", "gitlab", "workspace", "workspaces", "work", "git", "personal", "clients", "sandbox", "playground",
+    ]
+
+    static func projectPaths(for repos: [String], roots: [String]) -> [String: String] {
+        let home = URL(fileURLWithPath: NSHomeDirectory()).standardizedFileURL.path
+        let rootSet = Set(roots.map { URL(fileURLWithPath: expand($0)).standardizedFileURL.path })
+        let sorted = repos.sorted()
+
+        var outer: [String: String] = [:]
+        var topLevel: [String] = []
+        for path in sorted {
+            if let container = topLevel.first(where: { path.hasPrefix($0 + "/") }) {
+                outer[path] = container
+            } else {
+                topLevel.append(path)
+            }
+        }
+
+        var byParent: [String: [String]] = [:]
+        for path in topLevel {
+            byParent[(path as NSString).deletingLastPathComponent, default: []].append(path)
+        }
+
+        var result: [String: String] = [:]
+        for path in topLevel {
+            let parent = (path as NSString).deletingLastPathComponent
+            let siblings = byParent[parent]?.count ?? 0
+            let isContainer = containerNames.contains((parent as NSString).lastPathComponent.lowercased())
+            let groupable = siblings >= 2 && !isContainer && !rootSet.contains(parent) && parent != home && parent != "/"
+            result[path] = groupable ? parent : path
+        }
+        for (path, container) in outer {
+            result[path] = result[container] ?? container
+        }
+        return result
     }
 
     static func statuses(for paths: [String]) -> [RepoStatus] {
@@ -304,7 +396,9 @@ final class RepoStore: ObservableObject {
 
         DispatchQueue.global(qos: .userInitiated).async {
             let paths = needsDiscovery ? RepoScanner.discover(roots: roots, maxDepth: depth) : known.filter { FileManager.default.fileExists(atPath: $0 + "/.git") }
-            let statuses = RepoScanner.statuses(for: paths)
+            var statuses = RepoScanner.statuses(for: paths)
+            let projects = RepoScanner.projectPaths(for: paths, roots: roots)
+            for i in statuses.indices { statuses[i].projectPath = projects[statuses[i].path] ?? statuses[i].path }
             let sorted = statuses.sorted { a, b in
                 if a.state != b.state { return a.state < b.state }
                 return (a.lastCommitDate ?? .distantPast) > (b.lastCommitDate ?? .distantPast)

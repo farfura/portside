@@ -1,8 +1,10 @@
 import SwiftUI
 import AppKit
 
-enum AppTab: String {
-    case ports, repos
+enum AppTab: String, CaseIterable {
+    case ports, docker, repos
+
+    var order: Int { Self.allCases.firstIndex(of: self) ?? 0 }
 }
 
 enum DetailPanel: Equatable {
@@ -18,6 +20,7 @@ enum Route: Equatable {
 struct RootView: View {
     @EnvironmentObject private var ports: PortStore
     @EnvironmentObject private var repos: RepoStore
+    @EnvironmentObject private var docker: DockerStore
     @EnvironmentObject private var settings: AppSettings
     @ObservedObject private var toast = Toast.shared
     @State private var tab: AppTab = .ports
@@ -69,9 +72,13 @@ struct RootView: View {
         .preferredColorScheme(settings.preferredScheme)
         .onAppear {
             ports.setPanelVisible(true)
+            docker.setPanelVisible(true)
             repos.panelOpened()
         }
-        .onDisappear { ports.setPanelVisible(false) }
+        .onDisappear {
+            ports.setPanelVisible(false)
+            docker.setPanelVisible(false)
+        }
         .onExitCommand { if route != .home { go(.home) } }
     }
 
@@ -85,7 +92,9 @@ struct RootView: View {
 struct HomeView: View {
     @EnvironmentObject private var ports: PortStore
     @EnvironmentObject private var repos: RepoStore
+    @EnvironmentObject private var docker: DockerStore
     @Binding var tab: AppTab
+    @State private var previousTab: AppTab = .ports
     let openPort: (ListeningPort, DetailPanel?) -> Void
     let openSettings: () -> Void
 
@@ -99,22 +108,35 @@ struct HomeView: View {
             Theme.brand
                 .frame(height: 3)
 
-            TabSwitcher(tab: $tab, portCount: ports.devPorts.count, repoCount: repos.attentionCount)
+            TabSwitcher(
+                tab: $tab,
+                portCount: ports.devPorts.count,
+                dockerCount: docker.running.count,
+                repoCount: repos.attentionCount
+            )
 
             ZStack {
-                if tab == .ports {
-                    PortsView(open: openPort)
-                        .transition(.asymmetric(insertion: .move(edge: .leading).combined(with: .opacity), removal: .move(edge: .leading).combined(with: .opacity)))
-                } else {
-                    ReposView(openSettings: openSettings)
-                        .transition(.asymmetric(insertion: .move(edge: .trailing).combined(with: .opacity), removal: .move(edge: .trailing).combined(with: .opacity)))
+                switch tab {
+                case .ports:
+                    PortsView(open: openPort).transition(slide)
+                case .docker:
+                    DockerView().transition(slide)
+                case .repos:
+                    ReposView(openSettings: openSettings).transition(slide)
                 }
             }
             .frame(maxHeight: .infinity, alignment: .top)
             .clipped()
+            .onChange(of: tab) { old, _ in previousTab = old }
 
             FooterView(tab: tab)
         }
+    }
+
+    /// Tabs slide in from the side they sit on relative to the previous one.
+    private var slide: AnyTransition {
+        let edge: Edge = tab.order >= previousTab.order ? .trailing : .leading
+        return .move(edge: edge).combined(with: .opacity)
     }
 }
 
@@ -141,6 +163,7 @@ struct AppLogo: View {
 struct HeaderView: View {
     @EnvironmentObject private var ports: PortStore
     @EnvironmentObject private var repos: RepoStore
+    @EnvironmentObject private var docker: DockerStore
     @EnvironmentObject private var settings: AppSettings
     let openSettings: () -> Void
     @State private var spin: Double = 0
@@ -169,6 +192,7 @@ struct HeaderView: View {
             IconButton(symbol: "arrow.clockwise", help: "Refresh  ⌘R", rotation: spin) {
                 withAnimation(.easeInOut(duration: 0.7)) { spin += 360 }
                 ports.refresh(probe: true)
+                docker.refresh()
                 repos.refresh(rediscover: true)
             }
             .keyboardShortcut("r", modifiers: .command)
@@ -180,20 +204,24 @@ struct HeaderView: View {
     private var subtitle: String {
         let live = ports.devPorts.count
         let attention = repos.attentionCount
+        let containers = docker.running.count
         let portText = live == 0 ? "No servers running" : Format.plural(live, "server") + " live"
+        let dockerText = containers > 0 ? "  ·  " + Format.plural(containers, "container") : ""
         let repoText = attention == 0 ? "repos all clear" : Format.plural(attention, "repo") + " need you"
-        return portText + "  ·  " + repoText
+        return portText + dockerText + "  ·  " + repoText
     }
 }
 
 struct TabSwitcher: View {
     @Binding var tab: AppTab
     let portCount: Int
+    let dockerCount: Int
     let repoCount: Int
 
     var body: some View {
         HStack(spacing: 4) {
             segment(.ports, title: "Ports", count: portCount)
+            segment(.docker, title: "Docker", count: dockerCount)
             segment(.repos, title: "Repos", count: repoCount)
         }
         .padding(3)
@@ -234,11 +262,20 @@ struct TabSwitcher: View {
 struct FooterView: View {
     @EnvironmentObject private var ports: PortStore
     @EnvironmentObject private var repos: RepoStore
+    @EnvironmentObject private var docker: DockerStore
     let tab: AppTab
+
+    private var lastScan: Date? {
+        switch tab {
+        case .ports: return ports.lastScan
+        case .docker: return docker.lastScan
+        case .repos: return repos.lastScan
+        }
+    }
 
     var body: some View {
         HStack(spacing: 10) {
-            if let date = tab == .ports ? ports.lastScan : repos.lastScan {
+            if let date = lastScan {
                 (Text("Updated ") + Text(date, style: .relative) + Text(" ago"))
                     .font(Theme.text(11))
                     .foregroundStyle(Theme.tertiary)

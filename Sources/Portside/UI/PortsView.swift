@@ -5,58 +5,117 @@ struct PortsView: View {
     @EnvironmentObject private var ports: PortStore
     @EnvironmentObject private var settings: AppSettings
     let open: (ListeningPort, DetailPanel?) -> Void
+    @State private var query = ""
+
+    private var isSearching: Bool { !query.trimmingCharacters(in: .whitespaces).isEmpty }
+
+    /// A bare port number the user typed, e.g. "3000" or ":3000".
+    private var searchedPort: Int? {
+        let q = query.trimmingCharacters(in: .whitespaces)
+        return Int(q.hasPrefix(":") ? String(q.dropFirst()) : q)
+    }
 
     var body: some View {
-        let dev = ports.devPorts
-        let system = ports.systemPorts
+        VStack(spacing: 10) {
+            SearchField(text: $query, prompt: "Find by port number or project name")
+                .padding(.horizontal, 18)
 
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 6) {
-                if dev.isEmpty && ports.recentlyStopped.isEmpty {
-                    if ports.lastScan == nil {
-                        ForEach(0..<3, id: \.self) { _ in SkeletonRow() }
-                    } else {
-                        EmptyState(
-                            symbol: "circle.dotted",
-                            title: "No servers running",
-                            message: "Start one with npm run dev, docker compose up, or anything else. It shows up here on the next scan."
-                        )
-                        .padding(.top, 28)
-                        .padding(.horizontal, 12)
-                    }
+            ScrollView {
+                if isSearching {
+                    searchResults
                 } else {
-                    ForEach(dev) { port in
-                        PortRow(port: port, open: open)
-                            .transition(.opacity)
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.top, 4)
+                    allPorts
                 }
+            }
+            .scrollIndicators(.hidden)
+        }
+    }
 
-                if !ports.recentlyStopped.isEmpty {
+    private var searchResults: some View {
+        // Search everything, system ports included, so "what is on :5000" always has an answer.
+        let matches = ports.ports.filter { $0.matches(query) }
+        let stopped = ports.recentlyStopped.filter { $0.port.matches(query) }
+
+        return LazyVStack(alignment: .leading, spacing: 6) {
+            if matches.isEmpty && stopped.isEmpty {
+                EmptyState(
+                    symbol: "magnifyingglass",
+                    title: searchedPort.map { "Port \($0) is free" } ?? "No matches",
+                    message: searchedPort != nil
+                        ? "Nothing is listening on a port starting with \u{201C}\(query)\u{201D}."
+                        : "No running server, project or container matches \u{201C}\(query)\u{201D}.",
+                    tint: searchedPort != nil ? Theme.mint : Theme.secondary
+                )
+                .padding(.top, 28)
+                .padding(.horizontal, 12)
+            } else {
+                ForEach(matches) { port in
+                    PortRow(port: port, open: open, compact: port.isSystem)
+                        .transition(.opacity)
+                }
+                .padding(.horizontal, 12)
+                .padding(.top, 4)
+
+                if !stopped.isEmpty {
                     SectionLabel("Recently stopped")
                         .padding(.top, 18)
                         .padding(.horizontal, 18)
                         .padding(.bottom, 6)
-                    ForEach(ports.recentlyStopped) { stopped in
-                        StoppedRow(stopped: stopped)
-                    }
-                }
-
-                if settings.showSystemPorts && !system.isEmpty {
-                    SectionLabel("System and apps", trailing: "\(system.count)")
-                        .padding(.top, 18)
-                        .padding(.horizontal, 18)
-                        .padding(.bottom, 6)
-                    ForEach(system) { port in
-                        PortRow(port: port, open: open, compact: true)
-                    }
-                    .padding(.horizontal, 12)
+                    ForEach(stopped) { StoppedRow(stopped: $0) }
                 }
             }
-            .padding(.bottom, 14)
         }
-        .scrollIndicators(.hidden)
+        .padding(.bottom, 14)
+    }
+
+    private var allPorts: some View {
+        let dev = ports.devPorts
+        let system = ports.systemPorts
+
+        return LazyVStack(alignment: .leading, spacing: 6) {
+            if dev.isEmpty && ports.recentlyStopped.isEmpty {
+                if ports.lastScan == nil {
+                    ForEach(0..<3, id: \.self) { _ in SkeletonRow() }
+                } else {
+                    EmptyState(
+                        symbol: "circle.dotted",
+                        title: "No servers running",
+                        message: "Start one with npm run dev, docker compose up, or anything else. It shows up here on the next scan."
+                    )
+                    .padding(.top, 28)
+                    .padding(.horizontal, 12)
+                }
+            } else {
+                ForEach(dev) { port in
+                    PortRow(port: port, open: open)
+                        .transition(.opacity)
+                }
+                .padding(.horizontal, 12)
+                .padding(.top, 4)
+            }
+
+            if !ports.recentlyStopped.isEmpty {
+                SectionLabel("Recently stopped")
+                    .padding(.top, 18)
+                    .padding(.horizontal, 18)
+                    .padding(.bottom, 6)
+                ForEach(ports.recentlyStopped) { stopped in
+                    StoppedRow(stopped: stopped)
+                }
+            }
+
+            if settings.showSystemPorts && !system.isEmpty {
+                SectionLabel("System and apps", trailing: "\(system.count)")
+                    .padding(.top, 18)
+                    .padding(.horizontal, 18)
+                    .padding(.bottom, 6)
+                ForEach(system) { port in
+                    PortRow(port: port, open: open, compact: true)
+                }
+                .padding(.horizontal, 12)
+            }
+        }
+        .padding(.bottom, 14)
     }
 }
 

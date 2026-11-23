@@ -208,6 +208,19 @@ struct ListeningPort: Identifiable, Hashable {
         return tech == .unknown ? processName : tech.name
     }
 
+    /// Search by port number (":30", "3000") or by any name: project, folder path,
+    /// container, process or framework.
+    func matches(_ query: String) -> Bool {
+        let q = query.trimmingCharacters(in: .whitespaces)
+        guard !q.isEmpty else { return true }
+        let digits = q.hasPrefix(":") ? String(q.dropFirst()) : q
+        if !digits.isEmpty, digits.allSatisfy(\.isNumber) {
+            return String(port).hasPrefix(digits)
+        }
+        let fields = [displayName, projectName ?? "", projectRoot ?? cwd ?? "", containerName ?? "", processName, tech.name]
+        return fields.contains { $0.localizedCaseInsensitiveContains(q) }
+    }
+
     var localURLString: String { "http://localhost:\(port)" }
     var localURL: URL { URL(string: localURLString)! }
 

@@ -96,17 +96,10 @@ final class AppSettings: ObservableObject {
         }
     }
 
-    /// Common code folders inside home. Desktop and Documents are left out on purpose,
-    /// because touching them triggers a macOS privacy prompt on first launch.
-    static func defaultRoots() -> [String] {
-        let wanted: Set<String> = ["developer", "projects", "code", "dev", "src", "repos", "sites", "github", "workspace", "work", "git", "personal"]
-        let home = NSHomeDirectory()
-        let names = (try? FileManager.default.contentsOfDirectory(atPath: home)) ?? []
-        return names
-            .filter { wanted.contains($0.lowercased()) }
-            .sorted()
-            .map { "~/" + $0 }
-    }
+    /// Home itself, so projects kept directly in ~ are found too. The scanner never walks
+    /// Desktop, Documents, Downloads or Library from home, because touching them triggers
+    /// a macOS privacy prompt (or is just huge). Add those explicitly to scan them.
+    static func defaultRoots() -> [String] { ["~"] }
 
     var editor: ExternalApp? { ExternalApps.app(for: editorBundleID) }
     var terminal: ExternalApp? { ExternalApps.app(for: terminalBundleID) }

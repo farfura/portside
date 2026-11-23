@@ -9,17 +9,35 @@ struct ReposView: View {
     @State private var onlyAttention = true
     @State private var expanded: String?
 
-    private var filtered: [RepoStatus] {
-        repos.repos.filter { repo in
-            (!onlyAttention || repo.needsAttention || !query.isEmpty)
-                && (query.isEmpty || repo.name.localizedCaseInsensitiveContains(query) || repo.branch.localizedCaseInsensitiveContains(query))
+    private func matches(_ repo: RepoStatus) -> Bool {
+        guard !query.isEmpty else { return !onlyAttention || repo.needsAttention }
+        return repo.name.localizedCaseInsensitiveContains(query)
+            || repo.relativeName.localizedCaseInsensitiveContains(query)
+            || repo.branch.localizedCaseInsensitiveContains(query)
+            || (repo.isGrouped && repo.projectName.localizedCaseInsensitiveContains(query))
+    }
+
+    /// Repos bucketed by project, in the store's priority order (worst state first).
+    private var groups: [RepoGroup] {
+        var order: [String] = []
+        var all: [String: [RepoStatus]] = [:]
+        for repo in repos.repos {
+            let key = repo.projectPath.isEmpty ? repo.path : repo.projectPath
+            if all[key] == nil { order.append(key) }
+            all[key, default: []].append(repo)
+        }
+        return order.compactMap { key in
+            let members = all[key] ?? []
+            let shown = members.filter(matches)
+            guard !shown.isEmpty else { return nil }
+            return RepoGroup(path: key, all: members, shown: shown)
         }
     }
 
     var body: some View {
         VStack(spacing: 10) {
             HStack(spacing: 6) {
-                SearchField(text: $query, prompt: "Search \(repos.repos.count) repos")
+                SearchField(text: $query, prompt: "Search \(repos.repos.count) repos or projects")
                 FilterToggle(onlyAttention: $onlyAttention, count: repos.attentionCount)
                 IconButton(
                     symbol: "arrow.down.circle",
@@ -79,14 +97,14 @@ struct ReposView: View {
                 }
             }
             .padding(.top, 24)
-        } else if filtered.isEmpty {
+        } else if groups.isEmpty {
             VStack(spacing: 16) {
                 EmptyState(
                     symbol: query.isEmpty ? "checkmark.seal.fill" : "magnifyingglass",
                     title: query.isEmpty ? "Everything is shipped" : "No matches",
                     message: query.isEmpty
                         ? "All \(repos.repos.count) repos are committed, pushed and up to date. Go touch grass."
-                        : "No repo or branch matches \u{201C}\(query)\u{201D}.",
+                        : "No repo, project or branch matches \u{201C}\(query)\u{201D}.",
                     tint: Theme.mint
                 )
                 if query.isEmpty {
@@ -97,21 +115,106 @@ struct ReposView: View {
             }
             .padding(.top, 24)
         } else {
-            ForEach(filtered) { repo in
-                RepoRow(repo: repo, expanded: expanded == repo.id) {
-                    withAnimation(.spring(response: 0.34, dampingFraction: 0.86)) {
-                        expanded = expanded == repo.id ? nil : repo.id
+            ForEach(groups) { group in
+                if group.isProject {
+                    ProjectHeader(group: group)
+                        .padding(.top, 8)
+                    ForEach(group.shown) { repo in
+                        row(repo, title: repo.relativeName)
+                            .padding(.leading, 14)
+                            .overlay(alignment: .leading) {
+                                Rectangle().fill(Theme.stroke).frame(width: 1).padding(.leading, 6)
+                            }
                     }
+                } else {
+                    ForEach(group.shown) { repo in row(repo, title: nil) }
+                }
+            }
+        }
+    }
+
+    private func row(_ repo: RepoStatus, title: String?) -> some View {
+        RepoRow(repo: repo, title: title, expanded: expanded == repo.id) {
+            withAnimation(.spring(response: 0.34, dampingFraction: 0.86)) {
+                expanded = expanded == repo.id ? nil : repo.id
+            }
+        }
+        .transition(.opacity)
+    }
+}
+
+struct RepoGroup: Identifiable {
+    let path: String
+    /// Every repo in the project, so the header can count the hidden ones.
+    let all: [RepoStatus]
+    /// The repos that pass the current search and filter.
+    let shown: [RepoStatus]
+
+    var id: String { path }
+    var name: String { (path as NSString).lastPathComponent }
+    var isProject: Bool { all.count > 1 || all.contains(where: \.isGrouped) }
+    var attention: Int { all.filter(\.needsAttention).count }
+    var worst: RepoStatus.State { all.map(\.state).min() ?? .clean }
+}
+
+struct ProjectHeader: View {
+    @EnvironmentObject private var settings: AppSettings
+    let group: RepoGroup
+    @State private var hovering = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "folder.fill")
+                .font(.system(size: 11))
+                .foregroundStyle(group.worst.color)
+            Text(group.name)
+                .font(Theme.text(12.5, .medium))
+                .foregroundStyle(Theme.text)
+                .lineLimit(1)
+            Text(group.all.count == 1 ? "1 repo" : "\(group.all.count) repos")
+                .font(Theme.text(11))
+                .foregroundStyle(Theme.tertiary)
+            if group.attention > 0 {
+                Text("\(group.attention) need\(group.attention == 1 ? "s" : "") you")
+                    .font(Theme.text(11, .medium))
+                    .foregroundStyle(group.worst.color)
+            }
+            let hidden = group.all.count - group.shown.count
+            if hidden > 0 {
+                Text("+\(hidden) hidden")
+                    .font(Theme.text(11))
+                    .foregroundStyle(Theme.tertiary)
+                    .help("Clean repos in this project are hidden by the Needs you filter")
+            }
+            Spacer(minLength: 4)
+            if hovering {
+                HStack(spacing: 2) {
+                    AppIconButton(bundleID: settings.editorBundleID, help: "Open project in \(settings.editor?.name ?? "editor")", size: 22) {
+                        ExternalApps.open(path: group.path, with: settings.editorBundleID)
+                    }
+                    AppIconButton(bundleID: settings.terminalBundleID, help: "Open project in \(settings.terminal?.name ?? "terminal")", size: 22) {
+                        ExternalApps.open(path: group.path, with: settings.terminalBundleID)
+                    }
+                    IconButton(symbol: "folder", help: "Reveal in Finder", size: 22) { ExternalApps.reveal(group.path) }
                 }
                 .transition(.opacity)
             }
         }
+        .frame(height: 24)
+        .padding(.horizontal, 6)
+        .contentShape(Rectangle())
+        .onHover { value in withAnimation(.easeOut(duration: 0.14)) { hovering = value } }
+        .help((group.path as NSString).abbreviatingWithTildeInPath)
     }
 }
 
 struct FilterToggle: View {
     @Binding var onlyAttention: Bool
     let count: Int
+    var onLabel = "Needs you"
+    var offLabel = "All"
+    var onHelp = "Showing repos that need attention"
+    var offHelp = "Showing every repo"
     @State private var hovering = false
 
     var body: some View {
@@ -121,7 +224,7 @@ struct FilterToggle: View {
             HStack(spacing: 5) {
                 Image(systemName: onlyAttention ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
                     .font(.system(size: 11, weight: .semibold))
-                Text(onlyAttention ? "Needs you" : "All")
+                Text(onlyAttention ? onLabel : offLabel)
                     .font(.system(size: 11.5, weight: .semibold))
             }
             .foregroundStyle(onlyAttention || hovering ? Theme.text : Theme.secondary)
@@ -136,7 +239,7 @@ struct FilterToggle: View {
         }
         .buttonStyle(PressableStyle())
         .onHover { hovering = $0 }
-        .help(onlyAttention ? "Showing repos that need attention" : "Showing every repo")
+        .help(onlyAttention ? onHelp : offHelp)
     }
 }
 
@@ -185,6 +288,7 @@ struct RepoRow: View {
     @EnvironmentObject private var repos: RepoStore
     @EnvironmentObject private var settings: AppSettings
     let repo: RepoStatus
+    var title: String? = nil
     let expanded: Bool
     let toggle: () -> Void
     @State private var hovering = false
@@ -198,7 +302,7 @@ struct RepoRow: View {
 
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(spacing: 7) {
-                        Text(repo.name)
+                        Text(title ?? repo.name)
                             .font(Theme.text(13, .medium))
                             .foregroundStyle(Theme.text)
                             .lineLimit(1)

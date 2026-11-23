@@ -7,6 +7,7 @@ struct PortsideApp: App {
     @StateObject private var settings = AppSettings.shared
     @StateObject private var ports = PortStore.shared
     @StateObject private var repos = RepoStore.shared
+    @StateObject private var docker = DockerStore.shared
 
     var body: some Scene {
         MenuBarExtra {
@@ -14,6 +15,7 @@ struct PortsideApp: App {
                 .environmentObject(settings)
                 .environmentObject(ports)
                 .environmentObject(repos)
+                .environmentObject(docker)
         } label: {
             MenuBarLabel(ports: ports, settings: settings)
         }
@@ -50,6 +52,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         AppSettings.shared.applyAppearance()
         AppSettings.shared.startObservingSystemTheme()
         PortStore.shared.start()
+        DockerStore.shared.start()
         RepoStore.shared.start()
     }
 

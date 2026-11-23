@@ -129,7 +129,7 @@ enum PortScanner {
         return false
     }
 
-    private static func techForContainer(_ name: String, port: Int) -> Tech {
+    static func techForContainer(_ name: String, port: Int) -> Tech {
         let n = name.lowercased()
         if n.contains("postgres") || port == 5432 { return .postgres }
         if n.contains("redis") || port == 6379 { return .redis }
